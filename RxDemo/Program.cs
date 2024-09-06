@@ -1,5 +1,4 @@
-﻿using System;
-using System.Reactive.Linq;
+﻿using System.Reactive.Linq;
 using System.Reactive.Subjects;
 
 public class Token
@@ -15,13 +14,13 @@ public class Token
 
 public static class UserAuthentication
 {
-    private static int _counter = 0;
     public static Token UserToken { get; private set; } = new Token();
 
     public static event EventHandler OnSignInStatusUpdated;
 
     public static async Task UpdateSignInStatus(CancellationToken ct)
     {
+        Console.WriteLine("Updating sign in status...");
         await Task.Delay(1000, ct);
         UserToken = new Token();
         OnSignInStatusUpdated?.Invoke(null, EventArgs.Empty);
@@ -30,30 +29,23 @@ public static class UserAuthentication
 
 public class TokenService
 {
-    
     private IObservable<Token> RequestTokenUpdate()
     {
-
         return Observable.Create<Token>(async observer =>
         {
             var cts = new CancellationTokenSource();
-            //var token = new Token();
-            observer.OnNext(UserAuthentication.UserToken);
 
             void OnUserAuthenticationOnOnSignInStatusUpdated(object? sender, EventArgs args)
             {
-                observer.OnNext(UserAuthentication.UserToken);
                 observer.OnCompleted();
             }
 
             UserAuthentication.OnSignInStatusUpdated += OnUserAuthenticationOnOnSignInStatusUpdated;
 
             await UserAuthentication.UpdateSignInStatus(cts.Token);
-            //observer.OnCompleted();
             return () =>
             {
                 UserAuthentication.OnSignInStatusUpdated -= OnUserAuthenticationOnOnSignInStatusUpdated;
-                Console.WriteLine($"No longer requesting a token");
                 cts.Cancel();
             };
         });
@@ -62,21 +54,17 @@ public class TokenService
     // Simulate fetching a new token
     public IObservable<Token> FetchToken()
     {
-        var tokenStream = Observable.Return(UserAuthentication.UserToken).Select(token =>
-        {
-            return Observable.Return(token)
-                .Concat(Observable.Timer(token.ValidTo - DateTimeOffset.UtcNow)
-                    .Select((_) => RequestTokenUpdate()).Switch()
-                );
-        }).Switch();
-        return tokenStream;
+        var token = UserAuthentication.UserToken;
+        var delay = token.ValidTo - DateTime.Now;
+
+        return Observable.Return(token)
+            .Concat(Observable.Empty<Token>().Delay(delay.TotalMilliseconds > 0 ? delay : TimeSpan.Zero))
+            .Concat(RequestTokenUpdate());
     }
 
     public IObservable<Token> GetTokenStream()
     {
-        return Observable.Defer(() =>
-            FetchToken()
-        ).Repeat();
+        return Observable.Defer(FetchToken).Repeat();
     }
 }
 
@@ -84,9 +72,13 @@ class Program
 {
     static void Main()
     {
+        var t = UserAuthentication.UserToken;
         var tokenService = new TokenService();
-        var tokenStream = tokenService.GetTokenStream();//.Multicast(new ReplaySubject<Token>(1)).RefCount();
-
+        var tokenStream = tokenService.GetTokenStream()
+            .Multicast(new ReplaySubject<Token>(1))
+            .RefCount()
+            .Where(x => x.ValidTo > DateTime.Now);
+        
         
         var subscriptions = Array.Empty<(int, IDisposable)>();
         // Keep the application running to observe the token stream
